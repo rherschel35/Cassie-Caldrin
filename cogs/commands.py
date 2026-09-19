@@ -68,8 +68,8 @@ class GhostCommands(commands.Cog):
             memory_hint = prior[0]
 
         cue = (
-            f'{asker} asks you directly: "{question}". Answer as yourself - fast, sharp, genuinely engaged '
-            "with whatever they actually asked."
+            f'{asker} asks you directly: "{question}". Answer as yourself - warm, genuinely engaged with '
+            "whatever they actually asked, and glad they came to you with it."
         )
         line = await personality.speak(cue, memory_hint=memory_hint, max_tokens=250)
 
@@ -100,7 +100,8 @@ class GhostCommands(commands.Cog):
 
         cue = (
             f"You've just been asked to keep an eye on {user.display_name} specifically, for a while. "
-            "Announce it in character - curious and a little proud about it, not ominous."
+            "Announce it in character - warm and glad to do it, like someone volunteering to look out for "
+            "a friend, not ominous."
         )
         line = await personality.speak(cue, max_tokens=150)
 

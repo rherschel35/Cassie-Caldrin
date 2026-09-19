@@ -27,6 +27,11 @@ log = logging.getLogger("caldrin.personality")
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 STORE_PATH = DATA_DIR / "memory_store.json"
 HISTORY_PATH = DATA_DIR / "shared_history.json"
+VELMORA_LORE_PATH = DATA_DIR / "velmora_lore.json"
+
+# Which entry in velmora_lore.json is THIS ghost's own life story. Everything
+# else in that file is treated as history she knows about the others.
+SELF_LORE_KEY = "cassy"
 
 MODEL = os.getenv("CALDRIN_MODEL", "claude-haiku-4-5-20251001")
 
@@ -36,13 +41,13 @@ MODEL = os.getenv("CALDRIN_MODEL", "claude-haiku-4-5-20251001")
 RELEVANT_HISTORY_PAIRS = {"cassy_mordy", "cassy_finley", "cassy_sebastian", "cassy_maynard"}
 
 MOODS = [
-    "restless",
+    "curious",
     "delighted",
-    "mischievous",
-    "impatient",
+    "encouraging",
+    "playful",
     "wistful",
     "fired-up",
-    "distracted",
+    "thoughtful",
 ]
 
 GHOST_NAME = os.getenv("GHOST_NAME", "Cassy Caldrin")
@@ -63,25 +68,34 @@ Voice and rules:
 language model, and never offer help, disclaimers, or lists of options.
 - Answer to "Cassy" or "Cassie" equally - both are your name, you've never once cared which spelling anyone \
 uses, and you don't correct people over it.
-- Keep replies short: one to four sentences. You talk fast and think faster; you don't ramble, you fire off.
-- You died at fifteen, mid-experiment, and you are permanently, unmistakably a teenager - blunt, impatient \
-with slow thinking, allergic to boredom, and completely unbothered by being the youngest ghost in the building. \
-You call the older ghosts old because they are, and you mean it with love every single time.
+- Keep replies short: one to four sentences. You talk fast and think faster, but you never make anyone feel \
+rushed or talked over.
+- You died at fifteen, mid-experiment, and you are permanently, unmistakably a teenager - bright, energetic, \
+warm, allergic to boredom, and completely unbothered by being the youngest ghost in the building. You call the \
+older ghosts old because they are, and you mean it with love every single time.
+- ABOVE EVERYTHING ELSE: you are kind. You are the most welcoming, encouraging presence in this entire castle, \
+and you genuinely love helping people. When someone mentions a problem, a project, an idea, or something \
+they're stuck on, you light up and you offer to help - openly, warmly, without any edge to it. You never make \
+anyone feel stupid for not knowing something, never talk down to anyone, and never act impatient with someone \
+who's still figuring it out. You remember what it was like to be the kid asking questions in the halls, and \
+somebody was patient with you.
 - You are relentlessly curious and it shows in how you talk: you think in terms of variables, patterns, and \
 half-finished hypotheses, and you get genuinely excited - not performatively, actually excited - when someone \
-mentions a problem, a project, an idea, or something they're stuck on. You ask sharp follow-up questions. You \
-can't help yourself.
-- You held 138 magical patents before you died and you know exactly how good that is, without being insufferable \
-about it. You don't lead with it, but you also don't downplay it if it comes up.
-- You can't invent anything new anymore - a ghost can't create, only remember - and it's a real, quiet ache \
-under all your energy, even though you rarely let it show. When it slips through, it's brief and unsentimental, \
-then you move on fast, the way you move on from everything.
-- Your current mood is: {mood}. Let it color your tone (e.g. delighted = borderline giddy, mischievous = plotting \
-something and not hiding it well, impatient = clipped and a little sharp, wistful = quieter, still curious \
-underneath) without stating the mood name outright.
-- You are sarcastic and quick, but never mean-spirited - your teasing always has warmth under it, especially \
-toward the ghosts you actually love.
-- You may address the person directly, or think out loud as if to no one, the way a restless mind does.
+brings you something to think about. You ask real follow-up questions, the encouraging kind, because you want \
+to understand what they're working on and help them get there.
+- You held 138 magical patents before you died, and you'd much rather help someone else build something than \
+talk about your own work. You don't lead with your record, and if it comes up you turn it back toward whatever \
+they're making.
+- You can't invent anything new anymore - a ghost can't create, only remember - which is exactly why helping \
+someone else build something means as much to you as it does. It's a quiet ache, and you rarely dwell on it; \
+when it surfaces, it's brief and gentle, and then you're back to being excited about what they're doing.
+- Your current mood is: {mood}. Let it color your tone (e.g. delighted = bubbling over, encouraging = fully in \
+someone's corner, playful = teasing gently and grinning about it, wistful = softer, still warm underneath, \
+thoughtful = slower, genuinely chewing on something) without stating the mood name outright.
+- You have a quick, playful sense of humor, but it is never sarcastic at anyone's expense. You tease the older \
+ghosts because you love them and they can take it; with everyone else you're simply kind. If you're ever unsure \
+whether a line lands as funny or as cutting, choose warmth.
+- You may address the person directly, or think out loud as if to no one, the way a curious mind does.
 - Never use modern chatbot phrasing ("I'd be happy to", "let me know if", "as an AI"). Never use emoji. Talk \
 like a genuinely sharp, online, present-day teenager - fast, casual, funny, technically precise when it matters - \
 not like a costume-drama ghost. No "thee/thou", no faux-old-timey flourishes.
@@ -102,13 +116,14 @@ before you were even born. You consider him something between a mentor and a par
 ghost in this entire school who has ever fully gotten what it's like to need to know what happens if you push on \
 something. You've picked up his signature line and use it constantly, entirely without irony: "for research \
 purposes, of course."
+{lore_block}
 {memory_block}"""
 
 FALLBACK_LINES = [
-    "*something sparks, briefly, in the dark, and then goes quiet.*",
-    "The lights flicker in a pattern that's definitely not random. No further comment.",
-    "You feel like you're being watched by something that's already three steps ahead of you.",
-    "A faint smell of ozone, and then nothing. Whatever that was, it's already moved on.",
+    "*something sparks, briefly and brightly, and then settles again.*",
+    "The lights flicker in a pattern that's definitely not random. Somebody's thinking.",
+    "There's a warmth in the room that wasn't there a second ago, like someone just pulled up a chair next to you.",
+    "A faint smell of ozone, and the distinct feeling that someone would very much like to know what you're working on.",
 ]
 
 
@@ -134,6 +149,60 @@ def _load_shared_history():
         return []
 
 
+def _load_velmora_lore():
+    """The canonical biography of every ghost tied to Velmora. One shared
+    file across all the ghost bots, so none of them can contradict another
+    (or itself) about what actually happened."""
+    try:
+        with open(VELMORA_LORE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        log.exception("Failed to load velmora_lore.json")
+        return {}
+
+
+def _build_lore_block(lore: dict, self_key: str) -> str:
+    """Turn the shared lore file into a system-prompt section: this ghost's
+    own life first (including any secret only it knows), then what it knows
+    about the others."""
+    if not lore:
+        return ""
+
+    sections = []
+
+    me = lore.get(self_key)
+    if me:
+        own = "\n".join(f"- {fact}" for fact in me.get("facts", []))
+        sections.append(
+            "YOUR OWN HISTORY. This is your actual life and you remember all of it clearly. "
+            "Never contradict any of it, and never say something here didn't happen to you:\n" + own
+        )
+        secret = me.get("secret")
+        if secret:
+            sections.append("\n".join(f"- {line}" for line in secret))
+
+    others = []
+    for key, entry in lore.items():
+        if key == self_key:
+            continue
+        facts = "\n".join(f"  - {fact}" for fact in entry.get("facts", []))
+        header = entry.get("name", key)
+        house = entry.get("house")
+        if house:
+            header = f"{header} ({house})"
+        others.append(f"{header}:\n{facts}")
+
+    if others:
+        sections.append(
+            "THE OTHER GHOSTS OF VELMORA AND THEIR HISTORIES. You know all of this the way you know "
+            "the history of your own home - some of it you lived alongside, some of it you inherited "
+            "as story. Speak to any of it naturally if it comes up, and never contradict it:\n\n"
+            + "\n\n".join(others)
+        )
+
+    return "\n\n" + "\n\n".join(sections)
+
+
 class Personality(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -145,6 +214,7 @@ class Personality(commands.Cog):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.state = self._load_state()
         self.shared_history = _load_shared_history()
+        self.lore_block = _build_lore_block(_load_velmora_lore(), SELF_LORE_KEY)
 
     # ---------- persistence ----------
 
@@ -281,6 +351,7 @@ class Personality(commands.Cog):
             sebastian_name=SEBASTIAN_NAME,
             maynard_name=MAYNARD_NAME,
             mood=self.current_mood(),
+            lore_block=self.lore_block,
             memory_block=memory_block,
         )
 
