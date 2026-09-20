@@ -1,7 +1,7 @@
 """
 Cassy Caldrin — a Discord bot that plays the youngest, sharpest ghost in
-Velmora. Entry point: wires up the client, loads cogs, and starts the
-background whisper loop.
+Velmora. Entry point: wires up the client and loads cogs. She only ever
+speaks in response to someone; she never starts a conversation on her own.
 """
 
 import asyncio
@@ -97,9 +97,6 @@ async def on_ready():
         activity=discord.Activity(type=discord.ActivityType.watching, name=f"everything, closely, as {ghost_name}")
     )
 
-    haunting_cog = bot.get_cog("Haunting")
-    if haunting_cog:
-        haunting_cog.start_whisper_loop()
 
 
 async def main():
