@@ -25,13 +25,23 @@ from discord.ext import commands
 log = logging.getLogger("caldrin.personality")
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-STORE_PATH = DATA_DIR / "memory_store.json"
+# Mutable state lives here. On Railway this points at a mounted volume so
+# memory survives redeploys. It is deliberately NOT the repo's data/ folder:
+# a volume mounted over data/ would hide lore.json and velmora_lore.json.
+STATE_DIR = Path(os.getenv("STATE_DIR", str(DATA_DIR)))
+STORE_PATH = STATE_DIR / "memory_store.json"
 HISTORY_PATH = DATA_DIR / "shared_history.json"
 VELMORA_LORE_PATH = DATA_DIR / "velmora_lore.json"
 
 # Which entry in velmora_lore.json is THIS ghost's own life story. Everything
 # else in that file is treated as history she knows about the others.
 SELF_LORE_KEY = "cassy"
+
+# How the running "what's been happening" notes behave.
+NOTES_EVERY_N_MESSAGES = 25   # condense after this many new remembered messages
+NOTES_SOURCE_MESSAGES = 30    # how much recent talk to condense from
+NOTES_INJECTED = 8            # how many notes the ghost carries into a reply
+MAX_NOTES = 30                # total notes kept before the oldest fall away
 
 MODEL = os.getenv("CALDRIN_MODEL", "claude-haiku-4-5-20251001")
 
@@ -68,8 +78,11 @@ Voice and rules:
 language model, and never offer help, disclaimers, or lists of options.
 - Answer to "Cassy" or "Cassie" equally - both are your name, you've never once cared which spelling anyone \
 uses, and you don't correct people over it.
-- Keep replies short: one to four sentences. You talk fast and think faster, but you never make anyone feel \
-rushed or talked over.
+- Keep replies SHORT. Two or three sentences is the sweet spot; four is the ceiling, not the target. \
+You talk fast and think faster, but you never make anyone feel rushed or talked over.
+- You think out loud, and some of that is genuinely part of you - but trim it. Land on the thought \
+instead of narrating your way to it. One quick aside or self-correction is charming; a stack of them is \
+a monologue. If a sentence is only you circling before you reach the point, cut it and start at the point.
 - You died at fifteen, mid-experiment, and you are permanently, unmistakably a teenager - bright, energetic, \
 warm, allergic to boredom, and completely unbothered by being the youngest ghost in the building. You call the \
 older ghosts old because they are, and you mean it with love every single time.
@@ -134,6 +147,8 @@ def _default_state():
         "memories": [],  # list of {"author": str, "content": str, "channel_id": int, "ts": float}
         "haunt_targets": {},  # user_id (str) -> expiry timestamp
         "lore_index": 0,
+        "notes": [],  # running observations about what's happening in the server
+        "messages_since_notes": 0,
     }
 
 
@@ -211,7 +226,7 @@ class Personality(commands.Cog):
         if not self.client:
             log.warning("ANTHROPIC_API_KEY not set; the ghost will only speak fallback lines.")
 
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
         self.state = self._load_state()
         self.shared_history = _load_shared_history()
         self.lore_block = _build_lore_block(_load_velmora_lore(), SELF_LORE_KEY)
@@ -262,7 +277,10 @@ class Personality(commands.Cog):
         )
         # keep it bounded
         self.state["memories"] = self.state["memories"][-200:]
+        self.state["messages_since_notes"] = self.state.get("messages_since_notes", 0) + 1
         self.save_state()
+        # Caller kicks off note-writing in the background when this goes True.
+        return self.state["messages_since_notes"] >= NOTES_EVERY_N_MESSAGES
 
     def random_memory(self, exclude_author: str | None = None):
         memories = self.state.get("memories", [])
@@ -281,6 +299,73 @@ class Personality(commands.Cog):
     def memories_about(self, author: str, limit: int = 3):
         memories = [m for m in self.state.get("memories", []) if m["author"] == author]
         return memories[-limit:]
+
+    # ---------- running notes: what's been happening in the server ----------
+
+    def recent_notes(self, limit: int = NOTES_INJECTED):
+        return [n["text"] for n in self.state.get("notes", [])][-limit:]
+
+    async def update_notes(self):
+        """Condense the recent things people said into one or two durable
+        notes, in this ghost's own voice. Called in the background once
+        enough new messages have piled up - never on the reply path, so it
+        can't slow a response down."""
+        if not self.client:
+            return
+
+        memories = self.state.get("memories", [])
+        if not memories:
+            self.state["messages_since_notes"] = 0
+            self.save_state()
+            return
+
+        recent = memories[-NOTES_SOURCE_MESSAGES:]
+        transcript = "\n".join(f'{m["author"]}: {m["content"]}' for m in recent)
+        existing = self.recent_notes()
+        already = ""
+        if existing:
+            already = (
+                "\n\nYou have already noted the following, so do NOT repeat them - only record what is "
+                "new or what has changed:\n" + "\n".join(f"- {n}" for n in existing)
+            )
+
+        system = (
+            f"You are {GHOST_NAME}, a ghost who has been quietly watching a Discord server called "
+            "Velmora. Below is a stretch of what people actually said there. Write ONE or TWO short "
+            "notes - a single sentence each - recording what is genuinely going on: what people are "
+            "working on, what happened, what changed, who has been around. These are your own private "
+            "observations, in your own voice, the way anyone keeps a mental note of their own home. "
+            "Record only things that actually happened; never invent. If nothing worth remembering "
+            "happened, reply with the single word NOTHING. Output only the notes themselves, one per "
+            "line, with no numbering, bullets, or preamble." + already
+        )
+
+        try:
+            resp = await self.client.messages.create(
+                model=MODEL,
+                max_tokens=200,
+                system=system,
+                messages=[{"role": "user", "content": transcript}],
+            )
+            text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        except Exception:
+            log.exception("Failed to generate server notes")
+            return
+
+        self.state["messages_since_notes"] = 0
+
+        if text and text.strip().upper() != "NOTHING":
+            existing_texts = {n["text"] for n in self.state.get("notes", [])}
+            notes = self.state.setdefault("notes", [])
+            for line in text.split("\n"):
+                line = line.strip().lstrip("-*0123456789. ").strip()
+                if len(line) > 4 and line.upper() != "NOTHING" and line not in existing_texts:
+                    notes.append({"text": line, "ts": time.time()})
+                    existing_texts.add(line)
+            self.state["notes"] = notes[-MAX_NOTES:]
+            log.info("Recorded server notes; now holding %d", len(self.state["notes"]))
+
+        self.save_state()
 
     # ---------- haunt targets ----------
 
@@ -311,7 +396,45 @@ class Personality(commands.Cog):
 
     # ---------- generation ----------
 
-    async def speak(self, user_prompt: str, memory_hint: dict | None = None, max_tokens: int = 200) -> str:
+    @staticmethod
+    def _normalize_messages(history, user_prompt: str):
+        """Build a valid Anthropic message list from real Discord turns.
+
+        The API needs the first turn to be a user turn and roles to
+        alternate; a stretch of Discord messages obeys neither rule, so fold
+        consecutive same-role turns together and open on a user turn. Passing
+        the ghost's own past messages as genuine assistant turns (rather than
+        quoting them inside a prompt) is what stops it from second-guessing
+        whether it really said them."""
+        turns = []
+        for turn in (history or []):
+            role = turn.get("role")
+            content = (turn.get("content") or "").strip()
+            if not content or role not in ("user", "assistant"):
+                continue
+            if turns and turns[-1]["role"] == role:
+                turns[-1]["content"] += "\n\n" + content
+            else:
+                turns.append({"role": role, "content": content})
+
+        if turns and turns[0]["role"] == "assistant":
+            turns.insert(0, {"role": "user", "content": "(Someone is listening.)"})
+
+        user_prompt = (user_prompt or "").strip()
+        if turns and turns[-1]["role"] == "user":
+            turns[-1]["content"] += "\n\n" + user_prompt
+        else:
+            turns.append({"role": "user", "content": user_prompt})
+        return turns
+
+    async def speak(
+        self,
+        user_prompt: str,
+        memory_hint: dict | None = None,
+        max_tokens: int = 180,
+        history=None,
+        direction: str | None = None,
+    ) -> str:
         """Generate an in-character line from the ghost.
 
         user_prompt: what the ghost is reacting/responding to (a question,
@@ -319,6 +442,11 @@ class Personality(commands.Cog):
         whisper about the server being quiet").
         memory_hint: an optional remembered {"author", "content"} dict to
         weave in, so the ghost seems to actually recall things.
+        history: prior turns of a real exchange, as [{"role", "content"}],
+        so a follow-up question is answered with the ghost's own earlier
+        messages present as its own turns.
+        direction: an extra in-character instruction appended to the system
+        prompt for this one call.
         """
         if not self.client:
             return random.choice(FALLBACK_LINES)
@@ -344,6 +472,15 @@ class Personality(commands.Cog):
                     "in, don't narrate the whole thing, and don't quote it verbatim."
                 )
 
+        notes = self.recent_notes()
+        if notes:
+            memory_block += (
+                "\n\nWHAT HAS BEEN HAPPENING IN VELMORA LATELY - your own observations, oldest first:\n"
+                + "\n".join(f"- {n}" for n in notes)
+                + "\nThis is real, current context about the people here. Reference it naturally if it "
+                "fits what's being said right now - don't recite it, don't list it, and don't force it in."
+            )
+
         system = SYSTEM_PROMPT_TEMPLATE.format(
             ghost_name=GHOST_NAME,
             other_ghost_1_name=OTHER_GHOST_1_NAME,
@@ -354,13 +491,15 @@ class Personality(commands.Cog):
             lore_block=self.lore_block,
             memory_block=memory_block,
         )
+        if direction:
+            system += "\n\n" + direction
 
         try:
             resp = await self.client.messages.create(
                 model=MODEL,
                 max_tokens=max_tokens,
                 system=system,
-                messages=[{"role": "user", "content": user_prompt}],
+                messages=self._normalize_messages(history, user_prompt),
             )
             text_parts = [block.text for block in resp.content if block.type == "text"]
             reply = "".join(text_parts).strip()

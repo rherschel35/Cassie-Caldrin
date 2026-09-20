@@ -71,7 +71,7 @@ class GhostCommands(commands.Cog):
             f'{asker} asks you directly: "{question}". Answer as yourself - warm, genuinely engaged with '
             "whatever they actually asked, and glad they came to you with it."
         )
-        line = await personality.speak(cue, memory_hint=memory_hint, max_tokens=250)
+        line = await personality.speak(cue, memory_hint=memory_hint, max_tokens=220)
 
         embed = discord.Embed(
             description=line,
