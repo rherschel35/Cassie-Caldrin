@@ -25,7 +25,14 @@ LORE_PATH = DATA_DIR / "lore.json"
 
 WATCH_DURATION_SECONDS = 60 * 60 * 6  # 6 hours
 
-OTHER_GHOST_1_NAME = os.getenv("OTHER_GHOST_1_NAME", "Mordy Velmora")
+# Invisible per-ghost address tags - must match cogs/haunting.py exactly.
+GHOST_TAGS = {
+    "mordy": "\u2060",
+    "finley": "\u2061",
+    "cassy": "\u2062",
+}
+
+OTHER_GHOST_1_NAME = os.getenv("OTHER_GHOST_1_NAME") or os.getenv("OTHER_GHOST_NAME", "Mordy Velmora")
 OTHER_GHOST_2_NAME = os.getenv("OTHER_GHOST_2_NAME", "Finley Veyren")
 
 # Must match the constant of the same name in cogs/haunting.py.
@@ -175,8 +182,8 @@ class GhostCommands(commands.Cog):
         else:
             log.exception("Unhandled error in /mood", exc_info=error)
 
-    @app_commands.command(name="interact", description="Call out to Mordy or Finley for a brief exchange.")
-    @app_commands.describe(who="Which ghost do you want her to call out to?")
+    @app_commands.command(name="interact", description="Call out to another ghost for a brief exchange.")
+    @app_commands.describe(who="Which ghost to call out to. Leave blank and one is picked at random.")
     @app_commands.choices(who=[
         app_commands.Choice(name="Mordy Velmora", value="mordy"),
         app_commands.Choice(name="Finley Veyren", value="finley"),
@@ -188,23 +195,29 @@ class GhostCommands(commands.Cog):
             await interaction.response.send_message("No answer comes.", ephemeral=True)
             return
 
-        target_name = OTHER_GHOST_1_NAME if (who and who.value == "mordy") else OTHER_GHOST_2_NAME
-        if who is None:
-            import random as _random
-            target_name = _random.choice([OTHER_GHOST_1_NAME, OTHER_GHOST_2_NAME])
+        choice = who.value if who else random.choice(["mordy", "finley"])
+        target_name = OTHER_GHOST_1_NAME if choice == "mordy" else OTHER_GHOST_2_NAME
+        target_tag = GHOST_TAGS[choice]
 
         channel_id = interaction.channel_id
+        # (Re)start the exchange for this channel: this call-out is message 1.
         haunting.exchange_turns[channel_id] = {"total": 1, "last_at": time.time()}
 
         await interaction.response.defer(thinking=True)
 
         cue = (
-            f"Call out, in character, to {target_name}, one of the two other spirits who share this place "
-            "with you - address them directly, in front of everyone, inviting a response."
+            f"Call out, in character, to {target_name}, another spirit who shares this place with "
+            "you - address them directly, in front of everyone, inviting a response, as if starting "
+            "a conversation between the two of you."
         )
         line = await personality.speak(cue, max_tokens=150)
+        # Sent as a plain channel message rather than an interaction followup:
+        # the other ghost's bot reads this over the gateway, and a followup
+        # doesn't reliably carry its content to other bots. The trailing tag
+        # says who it's aimed at; the marker says it's genuine /interact
+        # traffic and not just something to eavesdrop on.
         await interaction.delete_original_response()
-        await interaction.channel.send(line + INTERACT_MARKER)
+        await interaction.channel.send(line + target_tag + INTERACT_MARKER)
 
 
 async def setup(bot: commands.Bot):

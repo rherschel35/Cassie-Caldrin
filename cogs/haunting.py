@@ -44,17 +44,32 @@ def _int_or_none(env_value: str | None):
     return int(env_value) if env_value and env_value.isdigit() else None
 
 
-# The other two ghost bots Cassy can exchange a few words with via /interact.
-OTHER_GHOST_1_ID = _int_or_none(os.getenv("OTHER_GHOST_1_ID"))
-OTHER_GHOST_1_NAME = os.getenv("OTHER_GHOST_1_NAME", "Mordy Velmora")
+# Every ghost carries an invisible tag. A message that is part of an /interact
+# exchange ends with the TARGET ghost's tag followed by INTERACT_MARKER, so with
+# three bots in one channel only the ghost actually being addressed answers -
+# the third one stays out of it instead of piling on. Both characters are
+# zero-width, so none of this is visible in Discord. These tables must stay
+# identical across all three bots.
+GHOST_TAGS = {
+    "mordy": "\u2060",
+    "finley": "\u2061",
+    "cassy": "\u2062",
+}
+SELF_TAG = GHOST_TAGS["cassy"]
+
+# Which other ghost bots this one can hold an exchange with. The legacy
+# single-ghost vars still work, so existing config keeps running.
+OTHER_GHOST_1_ID = _int_or_none(os.getenv("OTHER_GHOST_1_ID") or os.getenv("OTHER_GHOST_ID"))
+OTHER_GHOST_1_NAME = os.getenv("OTHER_GHOST_1_NAME") or os.getenv("OTHER_GHOST_NAME", "Mordy Velmora")
 OTHER_GHOST_2_ID = _int_or_none(os.getenv("OTHER_GHOST_2_ID"))
 OTHER_GHOST_2_NAME = os.getenv("OTHER_GHOST_2_NAME", "Finley Veyren")
 
-OTHER_GHOSTS_BY_ID = {}
+# discord user id -> what this ghost needs to talk back to them
+OTHER_GHOSTS = {}
 if OTHER_GHOST_1_ID:
-    OTHER_GHOSTS_BY_ID[OTHER_GHOST_1_ID] = OTHER_GHOST_1_NAME
+    OTHER_GHOSTS[OTHER_GHOST_1_ID] = {"name": OTHER_GHOST_1_NAME, "tag": GHOST_TAGS["mordy"]}
 if OTHER_GHOST_2_ID:
-    OTHER_GHOSTS_BY_ID[OTHER_GHOST_2_ID] = OTHER_GHOST_2_NAME
+    OTHER_GHOSTS[OTHER_GHOST_2_ID] = {"name": OTHER_GHOST_2_NAME, "tag": GHOST_TAGS["finley"]}
 
 EXCHANGE_MAX_MESSAGES = 3
 EXCHANGE_TIMEOUT_SECONDS = 300
@@ -83,7 +98,6 @@ KEYWORD_TRIGGERS = {
 }
 
 
-
 class Haunting(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -93,13 +107,25 @@ class Haunting(commands.Cog):
         # regardless of which of the two other ghosts it's talking to.
         self.exchange_turns = {}
 
-    async def _maybe_reply_to_other_ghost(self, message: discord.Message, other_ghost_name: str):
-        """Handle a message from one of the two other ghost bots during an
-        /interact exchange."""
+    async def _maybe_reply_to_other_ghost(self, message: discord.Message):
+        """Handle a message from another ghost bot during an /interact
+        exchange. Only answers when the message is addressed to THIS ghost -
+        with three bots sharing a channel, an untargeted call-out would pull
+        everyone in at once."""
         content = message.content or ""
         if not content.endswith(INTERACT_MARKER):
+            # Not deliberate /interact traffic - just something the other
+            # ghost said on its own. Not ours to answer.
             return
-        content = content[: -len(INTERACT_MARKER)]
+        body = content[: -len(INTERACT_MARKER)]
+        if not body.endswith(SELF_TAG):
+            # Aimed at one of the other ghosts. Stay out of it.
+            return
+        body = body[: -len(SELF_TAG)]
+
+        other = OTHER_GHOSTS.get(message.author.id)
+        if not other:
+            return
 
         channel_id = message.channel.id
         now = time.time()
@@ -116,16 +142,19 @@ class Haunting(commands.Cog):
             return
 
         cue = (
-            f'{other_ghost_name}, one of the other spirits who shares this place with you, just said: '
-            f'"{content}". Reply directly to them, in character, as part of a brief public back-and-forth. '
-            "Keep it short and let your personalities play off each other."
+            f'{other["name"]}, another spirit who shares this place with you, just said: '
+            f'"{body}". Reply directly to them, in character, as part of a brief public '
+            "back-and-forth between the two of you. Keep it short and let your personalities "
+            "play off each other."
         )
 
         async with message.channel.typing():
             line = await personality.speak(cue, max_tokens=150)
 
         try:
-            await message.channel.send(line + INTERACT_MARKER)
+            # Address the reply back to whoever spoke, so the exchange stays
+            # between the two of you.
+            await message.channel.send(line + other["tag"] + INTERACT_MARKER)
         except discord.HTTPException:
             log.exception("Failed to send cross-ghost reply in %s", channel_id)
             return
@@ -232,9 +261,8 @@ class Haunting(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
-            other_name = OTHER_GHOSTS_BY_ID.get(message.author.id)
-            if other_name and message.guild:
-                await self._maybe_reply_to_other_ghost(message, other_name)
+            if message.author.id in OTHER_GHOSTS and message.guild:
+                await self._maybe_reply_to_other_ghost(message)
             return
         if not message.guild:
             return
