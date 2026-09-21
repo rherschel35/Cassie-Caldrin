@@ -86,16 +86,23 @@ INTERACT_MARKER = "​"
 KEYWORD_TRIGGERS = {
     "cassy": "Someone said your name. React warmly to being noticed, by name - either spelling is fine, you never correct it.",
     "cassie": "Someone said your name. React warmly to being noticed, by name - either spelling is fine, you never correct it.",
-    "homework": "Someone mentioned homework. Get curious and encouraging about it - ask what they're working on, and make it clear you'd be glad to help think it through.",
-    "project": "Someone mentioned a project they're working on. Light up, ask a warm follow-up question about it, and offer to help if they want it.",
     "experiment": "Someone mentioned an experiment. This is your exact language - react with real enthusiasm, ask what they're testing, and offer to help.",
-    "stuck": "Someone said they're stuck on something. Be immediately, genuinely helpful - reassure them that being stuck is normal, and offer a gentle idea or ask what part is giving them trouble.",
-    "idea": "Someone mentioned an idea. Ask what it is with real enthusiasm - you love hearing what people are thinking about.",
-    "invent": "Someone brought up inventing or building something. React with warm interest and encouragement - this is exactly your thing, and you'd love to help.",
-    "bored": "Someone said they're bored. Cheerfully offer them something interesting to think about or do - you can always find something worth being curious about.",
-    "help": "Someone mentioned needing help. Offer it immediately and warmly - this is the thing you most love being asked for.",
     "explosion": "Someone brought up an explosion, literal or figurative. React with delight and a fond mention of your own track record.",
 }
+
+# Whole-word matching only, so "haunted" doesn't fire inside other words and
+# a name only counts when it's actually the name. Apostrophes are ignored.
+_KEYWORD_PATTERNS = {
+    kw: re.compile(r"\b" + re.escape(kw.replace("'", "")) + r"\b") for kw in KEYWORD_TRIGGERS
+}
+
+
+def match_keyword(content: str):
+    lowered = (content or "").lower().replace("'", "").replace("\u2019", "")
+    for keyword, cue in KEYWORD_TRIGGERS.items():
+        if _KEYWORD_PATTERNS[keyword].search(lowered):
+            return cue
+    return None
 
 
 class Haunting(commands.Cog):
@@ -294,11 +301,7 @@ class Haunting(commands.Cog):
         haunted = personality.is_haunted(message.author.id)
         lowered = content.lower().replace("'", "").replace("’", "")
 
-        matched_cue = None
-        for keyword, cue in KEYWORD_TRIGGERS.items():
-            if keyword in lowered:
-                matched_cue = cue
-                break
+        matched_cue = match_keyword(content)
 
         should_respond = False
         cue = None
@@ -313,7 +316,7 @@ class Haunting(commands.Cog):
                 f'someone whose work you actually respect. They just said: "{content}". Say something that '
                 "shows you noticed - curious and present, not intrusive."
             )
-        elif random.random() < 0.03:
+        elif random.random() < 0.01:
             should_respond = True
             cue = f'Someone said: "{content}". React to it in passing, briefly, as an aside.'
 
