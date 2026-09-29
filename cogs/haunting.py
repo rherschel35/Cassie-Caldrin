@@ -1,8 +1,9 @@
 """
 Passive presence: the ghost noticing things without being asked.
 
-- No unprompted chatter: the ghost only ever speaks in response to a real
-  message from someone in the channel.
+- No unprompted chatter and no ambient whisper loop: the ghost only ever
+  speaks in response to a real message from someone in the channel.
+  (Server rumors are handled by the Housecup bot, not here.)
 - Keyword-triggered reactions themed around Cassy's actual personality:
   curiosity about problems, projects, and ideas, plus being called by name
   (either spelling) and general chaos-adjacent topics.
@@ -78,7 +79,7 @@ EXCHANGE_TIMEOUT_SECONDS = 300
 # message that's genuinely part of an /interact exchange. Must match the
 # constant of the same name in cogs/commands.py, and in Mordy's/Finley's own
 # code, so the bots can tell a deliberate call-out apart from an ordinary
-# whisper or keyword reaction.
+# keyword reaction.
 INTERACT_MARKER = "​"
 
 # Words/phrases that catch Cassy's attention. Matched as substrings,
@@ -280,8 +281,8 @@ class Haunting(commands.Cog):
         if not personality:
             return
 
-        # Mood used to drift inside the whisper loop. With that gone, nudge it
-        # here instead - it self-throttles to roughly one shift every 2 hours.
+        # Nudge mood on real activity - self-throttles to roughly one shift
+        # every 2 hours.
         personality.maybe_shift_mood()
 
         content = message.content or ""
